@@ -4,6 +4,9 @@ const bcrypt = require("bcryptjs");
 const User = require("../models/userModel");
 const StudentProfile = require("../models/studentProfileModel");
 const Class = require("../models/classModel");
+const Test = require("../models/testModel");
+const Request = require("../models/requestModel");
+
 
 exports.registerStudent = async (req, res) => {
   const session = await mongoose.startSession();
@@ -254,6 +257,393 @@ exports.updateClassStatus = async (req, res) => {
     });
   } catch (error) {
     res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getAllStudents = async (req, res) => {
+  try {
+    const { search, mode, standard } = req.query;
+
+    const filter = {};
+
+    if (mode) {
+      filter.mode = mode;
+    }
+
+    if (standard) {
+      filter.standard = standard;
+    }
+
+    let query = StudentProfile.find(filter)
+      .populate("student", "name email")
+      .sort({ createdAt: -1 });
+
+    const profiles = await query;
+
+    let result = profiles;
+
+    if (search) {
+      const keyword = search.toLowerCase();
+
+      result = profiles.filter(
+        (p) =>
+          p.student?.name.toLowerCase().includes(keyword) ||
+          p.student?.email.toLowerCase().includes(keyword) ||
+          p.parentName.toLowerCase().includes(keyword) ||
+          p.school.toLowerCase().includes(keyword)
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      count: result.length,
+      data: result,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.getSingleStudent = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+
+    if (!studentId) {
+      throw new Error("Student id is required");
+    }
+
+    const profile = await StudentProfile.findOne({ student: studentId })
+      .populate("student", "name email");
+
+    if (!profile) {
+      throw new Error("Student not found");
+    }
+
+    const classes = await Class.find({ student: studentId })
+      .sort({ date: -1 })
+      .limit(10);
+
+    const tests = await Test.find({ student: studentId })
+      .sort({ testDate: -1 })
+      .limit(10);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        profile,
+        classes,
+        tests,
+      },
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.updateStudent = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { studentId } = req.params;
+
+    const {
+      name,
+      email,
+      parentName,
+      parentPhone,
+      school,
+      syllabus,
+      standard,
+      mode,
+      remarks,
+      subjects,
+    } = req.body;
+
+    if (!studentId) {
+      throw new Error("Student id is required");
+    }
+
+    const user = await User.findById(studentId).session(session);
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    if (email && email !== user.email) {
+      const exists = await User.findOne({ email }).session(session);
+      if (exists) {
+        throw new Error("Email already in use");
+      }
+      user.email = email;
+    }
+
+    if (name) user.name = name;
+
+    await user.save({ session });
+
+    const profile = await StudentProfile.findOne({ student: studentId }).session(session);
+
+    if (!profile) {
+      throw new Error("Student profile not found");
+    }
+
+    if (parentName) profile.parentName = parentName;
+    if (parentPhone) profile.parentPhone = parentPhone;
+    if (school) profile.school = school;
+    if (syllabus) profile.syllabus = syllabus;
+    if (standard) profile.standard = standard;
+    if (mode) profile.mode = mode;
+    if (remarks !== undefined) profile.remarks = remarks;
+    if (subjects) profile.subjects = subjects;
+
+    await profile.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      success: true,
+      message: "Student updated successfully",
+      data: { user, profile },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.deleteStudent = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { studentId } = req.params;
+
+    if (!studentId) {
+      throw new Error("Student id is required");
+    }
+
+    const user = await User.findById(studentId).session(session);
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    await StudentProfile.deleteOne({ student: studentId }).session(session);
+
+    await Class.deleteMany({ student: studentId }).session(session);
+
+    await Test.deleteMany({ student: studentId }).session(session);
+
+    await User.deleteOne({ _id: studentId }).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      success: true,
+      message: "Student deleted successfully",
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+
+exports.getAdminDashboard = async (req, res) => {
+  try {
+    const now = new Date();
+
+    const totalStudentsPromise = User.countDocuments({ role: "student" });
+
+    const totalClassesPromise = Class.countDocuments();
+
+    const classStatsPromise = Class.aggregate([
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const upcomingClassesPromise = Class.find({
+      date: { $gte: now },
+      status: "scheduled",
+    })
+      .sort({ date: 1 })
+      .limit(5);
+
+    const recentStudentsPromise = StudentProfile.find()
+      .populate("student", "name email")
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    const [
+      totalStudents,
+      totalClasses,
+      classStats,
+      upcomingClasses,
+      recentStudents,
+    ] = await Promise.all([
+      totalStudentsPromise,
+      totalClassesPromise,
+      classStatsPromise,
+      upcomingClassesPromise,
+      recentStudentsPromise,
+    ]);
+
+    const formattedStats = {
+      scheduled: 0,
+      done: 0,
+      postponed: 0,
+      cancelled: 0,
+    };
+
+    classStats.forEach((item) => {
+      formattedStats[item._id] = item.count;
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalStudents,
+        totalClasses,
+        classStats: formattedStats,
+        upcomingClasses,
+        recentStudents,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.handleRequest = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { status, newDate } = req.body;
+
+    if (!requestId) {
+      throw new Error("Request id is required");
+    }
+
+    if (!["approved", "rejected"].includes(status)) {
+      throw new Error("Invalid status");
+    }
+
+    const request = await Request.findById(requestId);
+
+    if (!request) {
+      throw new Error("Request not found");
+    }
+
+    if (request.status !== "pending") {
+      throw new Error("Request already processed");
+    }
+
+    const classData = await Class.findById(request.classId);
+
+    if (!classData) {
+      throw new Error("Class not found");
+    }
+
+    if (status === "approved") {
+      if (request.type === "cancel") {
+        classData.status = "cancelled";
+      }
+
+      if (request.type === "postpone") {
+        if (!newDate) {
+          throw new Error("New date required for postponing");
+        }
+
+        classData.status = "postponed";
+        classData.date = new Date(newDate);
+      }
+    }
+
+    request.status = status;
+
+    await classData.save();
+    await request.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Request ${status} successfully`,
+      data: {
+        request,
+        class: classData,
+      },
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.getAllRequests = async (req, res) => {
+  try {
+    const { status, type } = req.query;
+
+    const filter = {};
+
+    if (status) {
+      filter.status = status;
+    }
+
+    if (type) {
+      filter.type = type;
+    }
+
+    const requests = await Request.find(filter)
+      .populate({
+        path: "classId",
+        select: "date status tutor",
+      })
+      .populate({
+        path: "student",
+        select: "name email",
+      })
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: requests.length,
+      data: requests,
+    });
+  } catch (error) {
+    res.status(500).json({
       success: false,
       message: error.message,
     });
