@@ -8,147 +8,147 @@ const Test = require("../models/testModel");
 const Request = require("../models/requestModel");
 
 
-exports.registerStudent = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  exports.registerStudent = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-  try {
-    const {
-      name,
-      email,
-      password,
-      parentName,
-      parentPhone,
-      school,
-      syllabus,
-      standard,
-      mode,
-      remarks,
-      subjects = [],
-    } = req.body;
+    try {
+      const {
+        name,
+        email,
+        password,
+        parentName,
+        parentPhone,
+        school,
+        syllabus,
+        standard,
+        mode,
+        remarks,
+        subjects = [],
+      } = req.body;
 
-    if (!name || !email || !password) {
-      throw new Error("Name, email, and password are required");
+      if (!name || !email || !password) {
+        throw new Error("Name, email, and password are required");
+      }
+
+      if (!parentName || !parentPhone || !school || !standard || !mode) {
+        throw new Error("Missing required student profile fields");
+      }
+
+      const existingUser = await User.findOne({ email }).session(session);
+      if (existingUser) {
+        throw new Error("User already exists with this email");
+      }
+
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(password, salt);
+
+      const user = await User.create(
+        [
+          {
+            name,
+            email,
+            password: hashedPassword,
+            role: "student",
+          },
+        ],
+        { session }
+      );
+
+      const profile = await StudentProfile.create(
+        [
+          {
+            student: user[0]._id,
+            parentName,
+            parentPhone,
+            school,
+            syllabus,
+            standard,
+            mode,
+            remarks,
+            subjects,
+            tutors: [],
+          },
+        ],
+        { session }
+      );
+
+      await session.commitTransaction();
+      session.endSession();
+
+      res.status(201).json({
+        success: true,
+        data: {
+          user: user[0],
+          profile: profile[0],
+        },
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
     }
+  };
 
-    if (!parentName || !parentPhone || !school || !standard || !mode) {
-      throw new Error("Missing required student profile fields");
-    }
 
-    const existingUser = await User.findOne({ email }).session(session);
-    if (existingUser) {
-      throw new Error("User already exists with this email");
-    }
+    exports.assignTutor = async (req, res) => {
+      try {
+        const { studentId } = req.params;
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+        const { name, subject, hourlyRate } = req.body;
 
-    const user = await User.create(
-      [
-        {
+        if (!studentId) {
+          throw new Error("Student id is required");
+        }
+
+        if (!name || !subject) {
+          throw new Error("Tutor name and subject are required");
+        }
+
+        const profile = await StudentProfile.findOne({ student: studentId });
+
+        if (!profile) {
+          throw new Error("Student profile not found");
+        }
+
+        const isAlreadyAssigned = profile.tutors.some(
+          (t) =>
+            t.name.toLowerCase() === name.toLowerCase() &&
+            t.subject.toLowerCase() === subject.toLowerCase()
+        );
+
+        if (isAlreadyAssigned) {
+          throw new Error("Tutor already assigned for this subject");
+        }
+
+        profile.tutors.push({
           name,
-          email,
-          password: hashedPassword,
-          role: "student",
-        },
-      ],
-      { session }
-    );
+          subject,
+          hourlyRate: hourlyRate || 0,
+        });
 
-    const profile = await StudentProfile.create(
-      [
-        {
-          student: user[0]._id,
-          parentName,
-          parentPhone,
-          school,
-          syllabus,
-          standard,
-          mode,
-          remarks,
-          subjects,
-          tutors: [],
-        },
-      ],
-      { session }
-    );
+        if (!profile.subjects.includes(subject)) {
+          profile.subjects.push(subject);
+        }
 
-    await session.commitTransaction();
-    session.endSession();
+        await profile.save();
 
-    res.status(201).json({
-      success: true,
-      data: {
-        user: user[0],
-        profile: profile[0],
-      },
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-
-exports.assignTutor = async (req, res) => {
-  try {
-    const { studentId } = req.params;
-
-    const { name, subject, hourlyRate } = req.body;
-
-    if (!studentId) {
-      throw new Error("Student id is required");
-    }
-
-    if (!name || !subject) {
-      throw new Error("Tutor name and subject are required");
-    }
-
-    const profile = await StudentProfile.findOne({ student: studentId });
-
-    if (!profile) {
-      throw new Error("Student profile not found");
-    }
-
-    const isAlreadyAssigned = profile.tutors.some(
-      (t) =>
-        t.name.toLowerCase() === name.toLowerCase() &&
-        t.subject.toLowerCase() === subject.toLowerCase()
-    );
-
-    if (isAlreadyAssigned) {
-      throw new Error("Tutor already assigned for this subject");
-    }
-
-    profile.tutors.push({
-      name,
-      subject,
-      hourlyRate: hourlyRate || 0,
-    });
-
-    if (!profile.subjects.includes(subject)) {
-      profile.subjects.push(subject);
-    }
-
-    await profile.save();
-
-    res.status(200).json({
-      success: true,
-      message: "Tutor assigned successfully",
-      data: profile,
-    });
-  } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
+        res.status(200).json({
+          success: true,
+          message: "Tutor assigned successfully",
+          data: profile,
+        });
+      } catch (error) {
+        res.status(400).json({
+          success: false,
+          message: error.message,
+        });
+      }
+    };
 
 
 exports.scheduleClass = async (req, res) => {
@@ -248,6 +248,18 @@ exports.updateClassStatus = async (req, res) => {
 
     classData.status = status;
 
+    if (status === "done") {
+      const profile = await StudentProfile.findOne({ student: classData.student });
+      if (profile) {
+        const tutor = profile.tutors.find(t => t.name === classData.tutor.name && t.subject === classData.tutor.subject);
+        if (tutor) {
+          profile.totalHours += classData.duration;
+          profile.totalFees += classData.duration * tutor.hourlyRate;
+          await profile.save();
+        }
+      }
+    }
+
     await classData.save();
 
     res.status(200).json({
@@ -341,6 +353,85 @@ exports.getSingleStudent = async (req, res) => {
         classes,
         tests,
       },
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.createTest = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { subject, testDate, totalMarks, marks = 0, remarks } = req.body;
+
+    if (!studentId) {
+      throw new Error("Student id is required");
+    }
+
+    if (!subject || !testDate || totalMarks === undefined) {
+      throw new Error("Subject, testDate, and totalMarks are required");
+    }
+
+    const student = await User.findById(studentId);
+    if (!student) {
+      throw new Error("Student not found");
+    }
+
+    const newTest = await Test.create({
+      student: studentId,
+      subject,
+      testDate: new Date(testDate),
+      marks,
+      totalMarks,
+      remarks,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Test created successfully",
+      data: newTest,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.updateTestMarks = async (req, res) => {
+  try {
+    const { testId } = req.params;
+    const { marks, totalMarks, remarks } = req.body;
+
+    if (!testId) {
+      throw new Error("Test id is required");
+    }
+
+    if (marks === undefined && totalMarks === undefined && remarks === undefined) {
+      throw new Error("At least one of marks, totalMarks, or remarks is required");
+    }
+
+    const test = await Test.findById(testId);
+    if (!test) {
+      throw new Error("Test not found");
+    }
+
+    if (marks !== undefined) test.marks = marks;
+    if (totalMarks !== undefined) test.totalMarks = totalMarks;
+    if (remarks !== undefined) test.remarks = remarks;
+
+    await test.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Test updated successfully",
+      data: test,
     });
   } catch (error) {
     res.status(400).json({
@@ -494,6 +585,7 @@ exports.getAdminDashboard = async (req, res) => {
       date: { $gte: now },
       status: "scheduled",
     })
+      .populate("student", "name email")
       .sort({ date: 1 })
       .limit(5);
 
@@ -581,12 +673,13 @@ exports.handleRequest = async (req, res) => {
       }
 
       if (request.type === "postpone") {
-        if (!newDate) {
-          throw new Error("New date required for postponing");
+        const postponeDate = newDate || request.postponedDate;
+        if (!postponeDate) {
+          throw new Error("Postpone date is required");
         }
 
         classData.status = "postponed";
-        classData.date = new Date(newDate);
+        classData.date = new Date(postponeDate);
       }
     }
 

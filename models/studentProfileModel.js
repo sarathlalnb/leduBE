@@ -9,7 +9,6 @@ const studentProfileSchema = new mongoose.Schema(
       unique: true, // one profile per student
     },
 
-    // 👨‍👩‍👧 Parent Details
     parentName: {
       type: String,
       required: true,
@@ -41,7 +40,7 @@ const studentProfileSchema = new mongoose.Schema(
 
     mode: {
       type: String,
-      enum: ["online", "offline"],
+      enum: ["online", "offline","hybrid"],
       required: true,
     },
 

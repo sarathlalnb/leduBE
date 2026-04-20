@@ -7,9 +7,19 @@ const requestSchema = new mongoose.Schema(
       ref: "Class",
     },
 
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+
     type: {
       type: String,
       enum: ["postpone", "cancel"],
+    },
+
+    postponedDate: {
+      type: Date,
     },
 
     reason: String,

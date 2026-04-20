@@ -11,6 +11,8 @@ const {
   getAdminDashboard,
   handleRequest,
   getAllRequests,
+  createTest,
+  updateTestMarks,
 } = require("./controllers/admin.controller");
 const {
   getStudentDashboard,
@@ -34,6 +36,8 @@ router.post(
   isAdmin,
   scheduleClass,
 );
+router.post("/students/:studentId/tests", protect, isAdmin, createTest);
+router.patch("/tests/:testId/marks", protect, isAdmin, updateTestMarks);
 router.patch("/classes/:classId/status", protect, isAdmin, updateClassStatus);
 // -
 router.get("/students", protect, isAdmin, getAllStudents);
