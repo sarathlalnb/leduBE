@@ -9,9 +9,6 @@ const Request = require("../models/requestModel");
 
 
   exports.registerStudent = async (req, res) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
     try {
       const {
         name,
@@ -40,7 +37,7 @@ const Request = require("../models/requestModel");
         throw new Error("Duplicate subjects are not allowed for a student");
       }
 
-      const existingUser = await User.findOne({ email }).session(session);
+      const existingUser = await User.findOne({ email });
       if (existingUser) {
         throw new Error("User already exists with this email");
       }
@@ -48,50 +45,34 @@ const Request = require("../models/requestModel");
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
 
-      const user = await User.create(
-        [
-          {
-            name,
-            email,
-            password: hashedPassword,
-            role: "student",
-          },
-        ],
-        { session }
-      );
+      const user = await User.create({
+        name,
+        email,
+        password: hashedPassword,
+        role: "student",
+      });
 
-      const profile = await StudentProfile.create(
-        [
-          {
-            student: user[0]._id,
-            parentName,
-            parentPhone,
-            school,
-            syllabus,
-            standard,
-            mode,
-            remarks,
-            subjects,
-            tutors: [],
-          },
-        ],
-        { session }
-      );
-
-      await session.commitTransaction();
-      session.endSession();
+      const profile = await StudentProfile.create({
+        student: user._id,
+        parentName,
+        parentPhone,
+        school,
+        syllabus,
+        standard,
+        mode,
+        remarks,
+        subjects,
+        tutors: [],
+      });
 
       res.status(201).json({
         success: true,
         data: {
-          user: user[0],
-          profile: profile[0],
+          user,
+          profile,
         },
       });
     } catch (error) {
-      await session.abortTransaction();
-      session.endSession();
-
       res.status(400).json({
         success: false,
         message: error.message,
@@ -463,9 +444,6 @@ exports.updateTestMarks = async (req, res) => {
 
 
 exports.updateStudent = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { studentId } = req.params;
 
@@ -486,7 +464,7 @@ exports.updateStudent = async (req, res) => {
       throw new Error("Student id is required");
     }
 
-    const user = await User.findById(studentId).session(session);
+    const user = await User.findById(studentId);
     if (!user) {
       throw new Error("User not found");
     }
@@ -497,7 +475,7 @@ exports.updateStudent = async (req, res) => {
     }
 
     if (email && email !== user.email) {
-      const exists = await User.findOne({ email }).session(session);
+      const exists = await User.findOne({ email });
       if (exists) {
         throw new Error("Email already in use");
       }
@@ -506,9 +484,9 @@ exports.updateStudent = async (req, res) => {
 
     if (name) user.name = name;
 
-    await user.save({ session });
+    await user.save();
 
-    const profile = await StudentProfile.findOne({ student: studentId }).session(session);
+    const profile = await StudentProfile.findOne({ student: studentId });
 
     if (!profile) {
       throw new Error("Student profile not found");
@@ -523,10 +501,7 @@ exports.updateStudent = async (req, res) => {
     if (remarks !== undefined) profile.remarks = remarks;
     if (subjects) profile.subjects = subjects;
 
-    await profile.save({ session });
-
-    await session.commitTransaction();
-    session.endSession();
+    await profile.save();
 
     res.status(200).json({
       success: true,
@@ -534,9 +509,6 @@ exports.updateStudent = async (req, res) => {
       data: { user, profile },
     });
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-
     res.status(400).json({
       success: false,
       message: error.message,
@@ -546,9 +518,6 @@ exports.updateStudent = async (req, res) => {
 
 
 exports.deleteStudent = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
     const { studentId } = req.params;
 
@@ -556,30 +525,24 @@ exports.deleteStudent = async (req, res) => {
       throw new Error("Student id is required");
     }
 
-    const user = await User.findById(studentId).session(session);
+    const user = await User.findById(studentId);
     if (!user) {
       throw new Error("User not found");
     }
 
-    await StudentProfile.deleteOne({ student: studentId }).session(session);
+    await StudentProfile.deleteOne({ student: studentId });
 
-    await Class.deleteMany({ student: studentId }).session(session);
+    await Class.deleteMany({ student: studentId });
 
-    await Test.deleteMany({ student: studentId }).session(session);
+    await Test.deleteMany({ student: studentId });
 
-    await User.deleteOne({ _id: studentId }).session(session);
-
-    await session.commitTransaction();
-    session.endSession();
+    await User.deleteOne({ _id: studentId });
 
     res.status(200).json({
       success: true,
       message: "Student deleted successfully",
     });
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-
     res.status(400).json({
       success: false,
       message: error.message,
