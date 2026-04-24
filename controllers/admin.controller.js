@@ -35,6 +35,11 @@ const Request = require("../models/requestModel");
         throw new Error("Missing required student profile fields");
       }
 
+      // Check for duplicate subjects
+      if (subjects && subjects.length !== new Set(subjects).size) {
+        throw new Error("Duplicate subjects are not allowed for a student");
+      }
+
       const existingUser = await User.findOne({ email }).session(session);
       if (existingUser) {
         throw new Error("User already exists with this email");
@@ -115,6 +120,7 @@ const Request = require("../models/requestModel");
           throw new Error("Student profile not found");
         }
 
+        // Check if the same tutor-subject combination already exists
         const isAlreadyAssigned = profile.tutors.some(
           (t) =>
             t.name.toLowerCase() === name.toLowerCase() &&
@@ -123,6 +129,15 @@ const Request = require("../models/requestModel");
 
         if (isAlreadyAssigned) {
           throw new Error("Tutor already assigned for this subject");
+        }
+
+        // Check if the subject is already assigned to any tutor (prevent duplicate subjects)
+        const isDuplicateSubject = profile.tutors.some(
+          (t) => t.subject.toLowerCase() === subject.toLowerCase()
+        );
+
+        if (isDuplicateSubject) {
+          throw new Error("Subject is already assigned to another tutor for this student");
         }
 
         profile.tutors.push({
@@ -474,6 +489,11 @@ exports.updateStudent = async (req, res) => {
     const user = await User.findById(studentId).session(session);
     if (!user) {
       throw new Error("User not found");
+    }
+
+    // Check for duplicate subjects
+    if (subjects && subjects.length !== new Set(subjects).size) {
+      throw new Error("Duplicate subjects are not allowed for a student");
     }
 
     if (email && email !== user.email) {
