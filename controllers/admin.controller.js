@@ -181,21 +181,26 @@ exports.scheduleClass = async (req, res) => {
       throw new Error("Tutor not assigned to this student");
     }
 
-    const newClass = await Class.create({
-      student: studentId,
-      tutor: {
-        name: tutor.name,
-        subject: tutor.subject,
-      },
-      date: new Date(date),
-      duration,
-      status: "scheduled",
-    });
+    // Handle both single date and array of dates
+    const dates = Array.isArray(date) ? date : [date];
+
+    const newClasses = await Class.create(
+      dates.map((d) => ({
+        student: studentId,
+        tutor: {
+          name: tutor.name,
+          subject: tutor.subject,
+        },
+        date: new Date(d),
+        duration,
+        status: "scheduled",
+      }))
+    );
 
     res.status(201).json({
       success: true,
-      message: "Class scheduled successfully",
-      data: newClass,
+      message: `Class${dates.length > 1 ? "es" : ""} scheduled successfully`,
+      data: Array.isArray(date) ? newClasses : newClasses[0],
     });
   } catch (error) {
     res.status(400).json({
@@ -340,11 +345,11 @@ exports.getSingleStudent = async (req, res) => {
 
     const classes = await Class.find({ student: studentId })
       .sort({ date: -1 })
-      .limit(10);
+      
 
     const tests = await Test.find({ student: studentId })
       .sort({ testDate: -1 })
-      .limit(10);
+    
 
     res.status(200).json({
       success: true,
