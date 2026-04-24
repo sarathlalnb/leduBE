@@ -6,7 +6,20 @@ require("./dbConfig");
 
 const server = new express();
 
-server.use(cors());
+const corsOriginRaw = process.env.CORS_ORIGIN;
+const corsOrigins = corsOriginRaw
+  ? corsOriginRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  : "*";
+
+server.use(
+  cors({
+    origin: corsOrigins,
+    credentials: String(process.env.CORS_CREDENTIALS).toLowerCase() === "true",
+  })
+);
 
 server.use(express.json());
 
