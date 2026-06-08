@@ -4,6 +4,10 @@ const {
   assignTutor,
   scheduleClass,
   updateClassStatus,
+  editClass,
+  bulkEditClasses,
+  deleteClass,
+  deleteAllClasses,
   getAllStudents,
   getSingleStudent,
   updateStudent,
@@ -39,10 +43,14 @@ router.post(
 router.post("/students/:studentId/tests", protect, isAdmin, createTest);
 router.patch("/tests/:testId/marks", protect, isAdmin, updateTestMarks);
 router.patch("/classes/:classId/status", protect, isAdmin, updateClassStatus);
+router.patch("/classes/bulk-edit", protect, isAdmin, bulkEditClasses);
+router.patch("/classes/:classId", protect, isAdmin, editClass);
+router.delete("/classes/:classId", protect, isAdmin, deleteClass);
 // -
 router.get("/students", protect, isAdmin, getAllStudents);
 router.get("/students/:studentId", protect, isAdmin, getSingleStudent);
 router.put("/students/:studentId", protect, isAdmin, updateStudent);
+router.delete("/students/:studentId/classes", protect, isAdmin, deleteAllClasses);
 router.delete("/students/:studentId", protect, isAdmin, deleteStudent);
 // -
 router.get("/dashboard", protect, isAdmin, getAdminDashboard);

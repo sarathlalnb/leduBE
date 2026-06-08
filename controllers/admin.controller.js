@@ -276,6 +276,240 @@ exports.updateClassStatus = async (req, res) => {
   }
 };
 
+exports.editClass = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { date, duration, tutorName, subject } = req.body;
+
+    if (!classId) {
+      throw new Error("Class id is required");
+    }
+
+    const classData = await Class.findById(classId);
+
+    if (!classData) {
+      throw new Error("Class not found");
+    }
+
+    if (classData.status === "cancelled") {
+      throw new Error("Cannot edit a cancelled class");
+    }
+
+    if (classData.status === "done") {
+      throw new Error("Cannot edit a completed class");
+    }
+
+    // Update date if provided
+    if (date) {
+      classData.date = new Date(date);
+    }
+
+    // Update duration if provided
+    if (duration) {
+      classData.duration = duration;
+    }
+
+    // Update tutor information if provided
+    if (tutorName || subject) {
+      const profile = await StudentProfile.findOne({ student: classData.student });
+
+      if (!profile) {
+        throw new Error("Student profile not found");
+      }
+
+      // Find tutor with provided name and subject
+      const tutor = profile.tutors.find(
+        (t) =>
+          (tutorName ? t.name.toLowerCase() === tutorName.toLowerCase() : t.name === classData.tutor.name) &&
+          (subject ? t.subject.toLowerCase() === subject.toLowerCase() : t.subject === classData.tutor.subject)
+      );
+
+      if (!tutor) {
+        throw new Error("Tutor not assigned to this student for the specified subject");
+      }
+
+      classData.tutor = {
+        name: tutor.name,
+        subject: tutor.subject,
+      };
+    }
+
+    await classData.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Class updated successfully",
+      data: classData,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.bulkEditClasses = async (req, res) => {
+  try {
+    const { classIds, updateData } = req.body;
+
+    if (!classIds || !Array.isArray(classIds) || classIds.length === 0) {
+      throw new Error("classIds array is required and must not be empty");
+    }
+
+    if (!updateData || Object.keys(updateData).length === 0) {
+      throw new Error("At least one field to update is required");
+    }
+
+    const { date, duration, tutorName, subject } = updateData;
+
+    // Find all classes to validate them
+    const classesData = await Class.find({ _id: { $in: classIds } });
+
+    if (classesData.length === 0) {
+      throw new Error("No classes found with the provided IDs");
+    }
+
+    // If tutorName/subject provided, validate for each class's student
+    if (tutorName && subject) {
+      const studentIds = [...new Set(classesData.map((c) => c.student.toString()))];
+      for (const studentId of studentIds) {
+        const profile = await StudentProfile.findOne({ student: studentId });
+        if (!profile) throw new Error(`Student profile not found for student ${studentId}`);
+        const tutor = profile.tutors.find(
+          (t) =>
+            t.name.toLowerCase() === tutorName.toLowerCase() &&
+            t.subject.toLowerCase() === subject.toLowerCase()
+        );
+        if (!tutor) {
+          throw new Error(`Tutor "${tutorName}" with subject "${subject}" is not assigned to student ${studentId}`);
+        }
+      }
+    } else if (tutorName || subject) {
+      throw new Error("Both tutorName and subject must be provided together");
+    }
+
+    // Build mongo update object
+    const mongoUpdate = {};
+    if (date) mongoUpdate.date = new Date(date);
+    if (duration) mongoUpdate.duration = Number(duration);
+    if (tutorName && subject) {
+      mongoUpdate["tutor.name"] = tutorName;
+      mongoUpdate["tutor.subject"] = subject;
+    }
+
+    await Class.updateMany({ _id: { $in: classIds } }, { $set: mongoUpdate });
+
+    const finalClasses = await Class.find({ _id: { $in: classIds } });
+
+    res.status(200).json({
+      success: true,
+      message: `${finalClasses.length} class(es) updated successfully`,
+      count: finalClasses.length,
+      data: finalClasses,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.deleteClass = async (req, res) => {
+  try {
+    const { classId } = req.params;
+
+    if (!classId) {
+      throw new Error("Class id is required");
+    }
+
+    const classData = await Class.findById(classId);
+
+    if (!classData) {
+      throw new Error("Class not found");
+    }
+
+    if (classData.status === "done") {
+      const profile = await StudentProfile.findOne({ student: classData.student });
+      if (profile) {
+        const tutor = profile.tutors.find(
+          (t) => t.name === classData.tutor.name && t.subject === classData.tutor.subject
+        );
+        if (tutor) {
+          profile.totalHours = Math.max(0, profile.totalHours - classData.duration);
+          profile.totalFees = Math.max(0, profile.totalFees - classData.duration * tutor.hourlyRate);
+          await profile.save();
+        }
+      }
+    }
+
+    await Class.findByIdAndDelete(classId);
+
+    res.status(200).json({
+      success: true,
+      message: "Class deleted successfully",
+      data: classData,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.deleteAllClasses = async (req, res) => {
+  try {
+    const { studentId } = req.params;
+
+    if (!studentId) {
+      throw new Error("Student id is required");
+    }
+
+    const classesToDelete = await Class.find({ student: studentId });
+
+    if (classesToDelete.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "No classes found to delete",
+        deletedCount: 0,
+      });
+    }
+
+    // Reverse totalHours and totalFees for any "done" classes
+    const profile = await StudentProfile.findOne({ student: studentId });
+    if (profile) {
+      for (const classData of classesToDelete) {
+        if (classData.status === "done") {
+          const tutor = profile.tutors.find(
+            (t) => t.name === classData.tutor.name && t.subject === classData.tutor.subject
+          );
+          if (tutor) {
+            profile.totalHours = Math.max(0, profile.totalHours - classData.duration);
+            profile.totalFees = Math.max(0, profile.totalFees - classData.duration * tutor.hourlyRate);
+          }
+        }
+      }
+      await profile.save();
+    }
+
+    await Class.deleteMany({ student: studentId });
+
+    res.status(200).json({
+      success: true,
+      message: `${classesToDelete.length} class(es) deleted successfully`,
+      deletedCount: classesToDelete.length,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 exports.getAllStudents = async (req, res) => {
   try {
     const { search, mode, standard } = req.query;

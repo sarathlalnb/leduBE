@@ -13,13 +13,11 @@ const corsOrigins = corsOriginRaw
       .map((s) => s.trim())
       .filter(Boolean)
   : "*";
-
-server.use(
-  cors({
-    origin: corsOrigins,
-    credentials: String(process.env.CORS_CREDENTIALS).toLowerCase() === "true",
-  })
-);
+// {
+//     origin: corsOrigins,
+//     credentials: String(process.env.CORS_CREDENTIALS).toLowerCase() === "true",
+//   }
+server.use(cors());
 
 server.use(express.json());
 
