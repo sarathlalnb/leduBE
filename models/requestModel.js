@@ -13,6 +13,17 @@ const requestSchema = new mongoose.Schema(
       required: true,
     },
 
+    tutor: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+    requestedBy: {
+      type: String,
+      enum: ["student", "tutor"],
+      default: "student",
+    },
+
     type: {
       type: String,
       enum: ["postpone", "cancel"],

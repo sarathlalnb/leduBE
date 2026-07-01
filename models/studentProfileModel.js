@@ -57,7 +57,15 @@ const studentProfileSchema = new mongoose.Schema(
           type: String,
           required: true,
         },
-        hourlyRate: Number,
+        tutorHourlyRate: {
+          type: Number,
+          default: 0,
+        },
+        studentHourlyRate: {
+          type: Number,
+          default: 0,
+        },
+        hourlyRate: Number, // legacy field for older records
       },
     ],
 
@@ -66,9 +74,43 @@ const studentProfileSchema = new mongoose.Schema(
       default: 0,
     },
 
+    totalTutorFees: {
+      type: Number,
+      default: 0,
+    },
+
+    totalStudentFees: {
+      type: Number,
+      default: 0,
+    },
+
     totalFees: {
       type: Number,
       default: 0,
+    },
+
+    // 📦 Package Details
+    packageHours: {
+      type: Number,
+      default: 0, // total contracted hours e.g. 40
+    },
+
+    hoursPerDay: {
+      type: Number,
+      default: 1, // hours per class session e.g. 1.5
+    },
+
+    packageStartDate: {
+      type: Date,
+    },
+
+    packageEndDate: {
+      type: Date,
+    },
+
+    packagePattern: {
+      type: String, // e.g. "all-saturdays", "weekdays", "all-days"
+      trim: true,
     },
 
     // 📝 Extra Notes

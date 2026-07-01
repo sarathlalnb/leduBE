@@ -37,7 +37,7 @@ exports.getStudentDashboard = async (req, res) => {
     // Student profile summary
     const studentProfile = await StudentProfile.findOne({
       student: studentId,
-    }).select("school standard subjects totalHours totalFees");
+    }).select("school standard subjects totalHours totalFees totalTutorFees totalStudentFees");
 
     // Upcoming tests (next 3)
     const upcomingTests = await Test.find({

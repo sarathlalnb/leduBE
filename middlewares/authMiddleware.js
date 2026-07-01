@@ -49,3 +49,18 @@ exports.isAdmin = (req, res, next) => {
     });
   }
 };
+
+exports.isTutor = (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== "tutor") {
+      throw new Error("Access denied. Tutors only.");
+    }
+
+    next();
+  } catch (error) {
+    res.status(403).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};

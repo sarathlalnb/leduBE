@@ -23,6 +23,16 @@ const classSchema = new mongoose.Schema(
       default: 1,
     },
 
+    tutorRate: {
+      type: Number,
+      default: 0,
+    },
+
+    studentRate: {
+      type: Number,
+      default: 0,
+    },
+
     status: {
       type: String,
       enum: ["scheduled", "done", "postponed", "cancelled"],

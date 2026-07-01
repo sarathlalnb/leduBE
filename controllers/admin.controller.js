@@ -7,8 +7,281 @@ const Class = require("../models/classModel");
 const Test = require("../models/testModel");
 const Request = require("../models/requestModel");
 
+const getTutorRate = (tutor, rateKey) => {
+  const value = tutor?.[rateKey];
+  if (value === undefined || value === null || value === "") {
+    return 0;
+  }
+  return Number(value);
+};
 
-  exports.registerStudent = async (req, res) => {
+const applyBillingToProfile = async (profile, classData, delta) => {
+  if (!profile) return;
+
+  const tutor = profile.tutors.find(
+    (t) => t.name === classData.tutor.name && t.subject === classData.tutor.subject
+  );
+
+  if (!tutor) return;
+
+  const duration = Number(classData.duration) || 0;
+  const tutorRate = Number(classData.tutorRate ?? (getTutorRate(tutor, "tutorHourlyRate") || getTutorRate(tutor, "hourlyRate")));
+  const studentRate = Number(classData.studentRate ?? getTutorRate(tutor, "studentHourlyRate"));
+
+  profile.totalHours = Math.max(0, Number(profile.totalHours || 0) + delta * duration);
+  profile.totalTutorFees = Math.max(0, Number(profile.totalTutorFees || 0) + delta * duration * tutorRate);
+  profile.totalStudentFees = Math.max(0, Number(profile.totalStudentFees || 0) + delta * duration * studentRate);
+  profile.totalFees = profile.totalStudentFees;
+
+  await profile.save();
+};
+
+exports.registerTutor = async (req, res) => {
+  try {
+    const { name, email, password, hourlyRate = 0, subjects = [] } = req.body;
+
+    if (!name || !email || !password) {
+      throw new Error("Name, email, and password are required");
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      throw new Error("User already exists with this email");
+    }
+
+    const normalizedSubjects = Array.isArray(subjects)
+      ? subjects.map((subject) => subject.trim()).filter(Boolean)
+      : [];
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const user = await User.create({
+      name,
+      email,
+      password: hashedPassword,
+      role: "tutor",
+      hourlyRate: Number(hourlyRate) || 0,
+      subjects: normalizedSubjects,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Tutor registered successfully",
+      data: user,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getAllTutors = async (req, res) => {
+  try {
+    const tutors = await User.find({ role: "tutor" })
+      .select("name email hourlyRate subjects createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const now = new Date();
+    const reqYear = req.query.year ? parseInt(req.query.year, 10) : now.getFullYear();
+    const reqMonth = req.query.month ? parseInt(req.query.month, 10) : now.getMonth() + 1;
+    const startOfMonth = new Date(reqYear, reqMonth - 1, 1);
+    const endOfMonth = new Date(reqYear, reqMonth, 1);
+
+    const tutorNames = tutors.map(t => t.name);
+    const classes = await Class.find({
+      "tutor.name": { $in: tutorNames },
+      status: "done"
+    }).lean();
+
+    const statsMap = {};
+    tutorNames.forEach(name => {
+      statsMap[name] = { totalClasses: 0, classesThisMonth: 0, hoursThisMonth: 0, totalHours: 0 };
+    });
+
+    classes.forEach(c => {
+      const tName = c.tutor?.name;
+      if (tName && statsMap[tName]) {
+        statsMap[tName].totalClasses += 1;
+        statsMap[tName].totalHours += Number(c.duration || 0);
+
+        const d = new Date(c.date);
+        if (d.getFullYear() === reqYear && d.getMonth() === reqMonth - 1) {
+          statsMap[tName].classesThisMonth += 1;
+          statsMap[tName].hoursThisMonth += Number(c.duration || 0);
+        }
+      }
+    });
+
+    const enrichedTutors = tutors.map(t => ({
+      ...t,
+      stats: statsMap[t.name] || { totalClasses: 0, classesThisMonth: 0, hoursThisMonth: 0, totalHours: 0 }
+    }));
+
+    res.status(200).json({
+      success: true,
+      count: enrichedTutors.length,
+      data: enrichedTutors,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.updateTutor = async (req, res) => {
+  try {
+    const { tutorId } = req.params;
+    const { name, email, subjects } = req.body;
+
+    if (!tutorId) {
+      throw new Error("Tutor id is required");
+    }
+
+    const tutor = await User.findById(tutorId);
+    if (!tutor || tutor.role !== "tutor") {
+      throw new Error("Tutor not found");
+    }
+
+    if (email && email !== tutor.email) {
+      const existingUser = await User.findOne({ email });
+      if (existingUser) {
+        throw new Error("Email already in use");
+      }
+    }
+
+    const normalizedSubjects = Array.isArray(subjects)
+      ? subjects.map((subject) => subject.trim()).filter(Boolean)
+      : [];
+
+    tutor.name = name || tutor.name;
+    tutor.email = email || tutor.email;
+    tutor.subjects = normalizedSubjects;
+
+    await tutor.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Tutor updated successfully",
+      data: tutor,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.deleteTutor = async (req, res) => {
+  try {
+    const { tutorId } = req.params;
+
+    if (!tutorId) {
+      throw new Error("Tutor id is required");
+    }
+
+    const tutor = await User.findById(tutorId);
+    if (!tutor || tutor.role !== "tutor") {
+      throw new Error("Tutor not found");
+    }
+
+    await User.findByIdAndDelete(tutorId);
+
+    res.status(200).json({
+      success: true,
+      message: "Tutor deleted successfully",
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.updateAssignedTutor = async (req, res) => {
+  try {
+    const { studentId, tutorId } = req.params;
+    const { name, subject, tutorHourlyRate, studentHourlyRate, hourlyRate } = req.body;
+
+    if (!studentId) {
+      throw new Error("Student id is required");
+    }
+
+    if (!tutorId) {
+      throw new Error("Assigned tutor id is required");
+    }
+
+    if (!name || !subject) {
+      throw new Error("Tutor name and subject are required");
+    }
+
+    const profile = await StudentProfile.findOne({ student: studentId });
+
+    if (!profile) {
+      throw new Error("Student profile not found");
+    }
+
+    const tutorEntry = profile.tutors.id(tutorId);
+
+    if (!tutorEntry) {
+      throw new Error("Assigned tutor not found");
+    }
+
+    const duplicateTutorSubject = profile.tutors.some(
+      (t) =>
+        String(t._id) !== tutorId &&
+        t.name.toLowerCase() === name.toLowerCase() &&
+        t.subject.toLowerCase() === subject.toLowerCase()
+    );
+
+    if (duplicateTutorSubject) {
+      throw new Error("Tutor already assigned for this subject");
+    }
+
+    const duplicateSubject = profile.tutors.some(
+      (t) => String(t._id) !== tutorId && t.subject.toLowerCase() === subject.toLowerCase()
+    );
+
+    if (duplicateSubject) {
+      throw new Error("Subject is already assigned to another tutor for this student");
+    }
+
+    const resolvedTutorRate = tutorHourlyRate ?? hourlyRate ?? 0;
+    const resolvedStudentRate = studentHourlyRate ?? 0;
+
+    tutorEntry.name = name;
+    tutorEntry.subject = subject;
+    tutorEntry.tutorHourlyRate = Number(resolvedTutorRate) || 0;
+    tutorEntry.studentHourlyRate = Number(resolvedStudentRate) || 0;
+    tutorEntry.hourlyRate = Number(resolvedTutorRate) || 0;
+
+    profile.subjects = Array.from(
+      new Set(profile.tutors.map((t) => t.subject).filter(Boolean))
+    );
+
+    await profile.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Assigned tutor updated successfully",
+      data: profile,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.registerStudent = async (req, res) => {
     try {
       const {
         name,
@@ -22,6 +295,12 @@ const Request = require("../models/requestModel");
         mode,
         remarks,
         subjects = [],
+        totalHours = 0,
+        packageHours = 0,
+        hoursPerDay = 1,
+        packageStartDate,
+        packageEndDate,
+        packagePattern,
       } = req.body;
 
       if (!name || !email || !password) {
@@ -63,6 +342,12 @@ const Request = require("../models/requestModel");
         remarks,
         subjects,
         tutors: [],
+        totalHours: Number(totalHours) || 0,
+        packageHours: Number(packageHours) || 0,
+        hoursPerDay: Number(hoursPerDay) || 1,
+        packageStartDate: packageStartDate ? new Date(packageStartDate) : undefined,
+        packageEndDate: packageEndDate ? new Date(packageEndDate) : undefined,
+        packagePattern: packagePattern || undefined,
       });
 
       res.status(201).json({
@@ -85,7 +370,7 @@ const Request = require("../models/requestModel");
       try {
         const { studentId } = req.params;
 
-        const { name, subject, hourlyRate } = req.body;
+        const { name, subject, tutorHourlyRate, studentHourlyRate, hourlyRate } = req.body;
 
         if (!studentId) {
           throw new Error("Student id is required");
@@ -121,10 +406,15 @@ const Request = require("../models/requestModel");
           throw new Error("Subject is already assigned to another tutor for this student");
         }
 
+        const resolvedTutorRate = tutorHourlyRate ?? hourlyRate ?? 0;
+        const resolvedStudentRate = studentHourlyRate ?? 0;
+
         profile.tutors.push({
           name,
           subject,
-          hourlyRate: hourlyRate || 0,
+          tutorHourlyRate: Number(resolvedTutorRate) || 0,
+          studentHourlyRate: Number(resolvedStudentRate) || 0,
+          hourlyRate: Number(resolvedTutorRate) || 0,
         });
 
         if (!profile.subjects.includes(subject)) {
@@ -151,7 +441,16 @@ exports.scheduleClass = async (req, res) => {
   try {
     const { studentId } = req.params;
 
-    const { tutorName, subject, date, duration = 1 } = req.body;
+    const { 
+      tutorName, 
+      subject, 
+      date, 
+      duration = 1,
+      packageHours,
+      packagePattern,
+      packageStartDate,
+      packageEndDate
+    } = req.body;
 
     if (!studentId) {
       throw new Error("Student id is required");
@@ -189,9 +488,21 @@ exports.scheduleClass = async (req, res) => {
         },
         date: new Date(d),
         duration,
+        tutorRate: Number(tutor.tutorHourlyRate ?? tutor.hourlyRate ?? 0) || 0,
+        studentRate: Number(tutor.studentHourlyRate ?? 0) || 0,
         status: "scheduled",
       }))
     );
+
+    // Update package info in profile if provided
+    if (packageHours || packagePattern || packageStartDate) {
+      if (packageHours !== undefined) profile.packageHours = Number(packageHours);
+      if (duration !== undefined) profile.hoursPerDay = Number(duration);
+      if (packagePattern !== undefined) profile.packagePattern = packagePattern;
+      if (packageStartDate !== undefined) profile.packageStartDate = packageStartDate ? new Date(packageStartDate) : null;
+      if (packageEndDate !== undefined) profile.packageEndDate = packageEndDate ? new Date(packageEndDate) : null;
+      await profile.save();
+    }
 
     res.status(201).json({
       success: true,
@@ -235,7 +546,16 @@ exports.updateClassStatus = async (req, res) => {
       throw new Error("Cannot update a cancelled class");
     }
 
-    if (classData.status === "done") {
+    const isTutorRequest = req.user?.role === "tutor";
+    if (isTutorRequest) {
+      const tutorName = classData.tutor?.name?.toLowerCase();
+      const currentTutorName = req.user?.name?.toLowerCase();
+      if (!tutorName || tutorName !== currentTutorName) {
+        throw new Error("You can only update your own classes");
+      }
+    }
+
+    if (classData.status === "done" && status === "done") {
       throw new Error("Class already marked as done");
     }
 
@@ -247,18 +567,14 @@ exports.updateClassStatus = async (req, res) => {
       classData.date = new Date(newDate);
     }
 
+    const previousStatus = classData.status;
     classData.status = status;
 
-    if (status === "done") {
-      const profile = await StudentProfile.findOne({ student: classData.student });
-      if (profile) {
-        const tutor = profile.tutors.find(t => t.name === classData.tutor.name && t.subject === classData.tutor.subject);
-        if (tutor) {
-          profile.totalHours += classData.duration;
-          profile.totalFees += classData.duration * tutor.hourlyRate;
-          await profile.save();
-        }
-      }
+    const profile = await StudentProfile.findOne({ student: classData.student });
+    if (previousStatus === "done" && status !== "done") {
+      await applyBillingToProfile(profile, classData, -1);
+    } else if (status === "done" && previousStatus !== "done") {
+      await applyBillingToProfile(profile, classData, 1);
     }
 
     await classData.save();
@@ -432,16 +748,7 @@ exports.deleteClass = async (req, res) => {
 
     if (classData.status === "done") {
       const profile = await StudentProfile.findOne({ student: classData.student });
-      if (profile) {
-        const tutor = profile.tutors.find(
-          (t) => t.name === classData.tutor.name && t.subject === classData.tutor.subject
-        );
-        if (tutor) {
-          profile.totalHours = Math.max(0, profile.totalHours - classData.duration);
-          profile.totalFees = Math.max(0, profile.totalFees - classData.duration * tutor.hourlyRate);
-          await profile.save();
-        }
-      }
+      await applyBillingToProfile(profile, classData, -1);
     }
 
     await Class.findByIdAndDelete(classId);
@@ -483,16 +790,9 @@ exports.deleteAllClasses = async (req, res) => {
     if (profile) {
       for (const classData of classesToDelete) {
         if (classData.status === "done") {
-          const tutor = profile.tutors.find(
-            (t) => t.name === classData.tutor.name && t.subject === classData.tutor.subject
-          );
-          if (tutor) {
-            profile.totalHours = Math.max(0, profile.totalHours - classData.duration);
-            profile.totalFees = Math.max(0, profile.totalFees - classData.duration * tutor.hourlyRate);
-          }
+          await applyBillingToProfile(profile, classData, -1);
         }
       }
-      await profile.save();
     }
 
     await Class.deleteMany({ student: studentId });
@@ -526,7 +826,8 @@ exports.getAllStudents = async (req, res) => {
 
     let query = StudentProfile.find(filter)
       .populate("student", "name email")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     const profiles = await query;
 
@@ -544,10 +845,44 @@ exports.getAllStudents = async (req, res) => {
       );
     }
 
+    const now = new Date();
+    const reqYear = req.query.year ? parseInt(req.query.year, 10) : now.getFullYear();
+    const reqMonth = req.query.month ? parseInt(req.query.month, 10) : now.getMonth() + 1;
+
+    const studentIds = result.map(p => p.student?._id).filter(Boolean);
+    const classes = await Class.find({
+      student: { $in: studentIds },
+      status: "done"
+    }).lean();
+
+    const statsMap = {};
+    studentIds.forEach(id => {
+      statsMap[id.toString()] = { totalClasses: 0, classesThisMonth: 0, hoursThisMonth: 0, totalHours: 0 };
+    });
+
+    classes.forEach(c => {
+      const sId = c.student?.toString();
+      if (sId && statsMap[sId]) {
+        statsMap[sId].totalClasses += 1;
+        statsMap[sId].totalHours += Number(c.duration || 0);
+
+        const d = new Date(c.date);
+        if (d.getFullYear() === reqYear && d.getMonth() === reqMonth - 1) {
+          statsMap[sId].classesThisMonth += 1;
+          statsMap[sId].hoursThisMonth += Number(c.duration || 0);
+        }
+      }
+    });
+
+    const enrichedResult = result.map(p => ({
+      ...p,
+      stats: p.student?._id ? (statsMap[p.student._id.toString()] || { totalClasses: 0, classesThisMonth: 0, hoursThisMonth: 0, totalHours: 0 }) : { totalClasses: 0, classesThisMonth: 0, hoursThisMonth: 0, totalHours: 0 }
+    }));
+
     res.status(200).json({
       success: true,
-      count: result.length,
-      data: result,
+      count: enrichedResult.length,
+      data: enrichedResult,
     });
   } catch (error) {
     res.status(500).json({
@@ -557,6 +892,208 @@ exports.getAllStudents = async (req, res) => {
   }
 };
 
+
+exports.getTutorDashboard = async (req, res) => {
+  try {
+    const tutorName = req.user?.name;
+    if (!tutorName) {
+      throw new Error("Tutor profile not found");
+    }
+
+    const now = new Date();
+    const upcomingClasses = await Class.find({
+      "tutor.name": tutorName,
+      date: { $gte: now },
+      status: { $in: ["scheduled", "postponed"] },
+    }).sort({ date: 1 }).limit(10);
+
+    const recentClasses = await Class.find({
+      "tutor.name": tutorName,
+      status: "done",
+    }).sort({ date: -1 }).limit(10);
+
+    const allClasses = await Class.find({ "tutor.name": tutorName });
+    const completedClasses = allClasses.filter((item) => item.status === "done");
+    const totalHours = completedClasses.reduce((sum, item) => sum + Number(item.duration || 0), 0);
+    const totalRevenue = completedClasses.reduce((sum, item) => sum + Number(item.tutorRate || 0) * Number(item.duration || 0), 0);
+
+    const monthlySummary = completedClasses.reduce((acc, item) => {
+      const date = new Date(item.date);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      const existing = acc[monthKey] || { month: monthKey, classes: 0, hours: 0, revenue: 0 };
+      existing.classes += 1;
+      existing.hours += Number(item.duration || 0);
+      existing.revenue += Number(item.tutorRate || 0) * Number(item.duration || 0);
+      acc[monthKey] = existing;
+      return acc;
+    }, {});
+
+    // Current month stats
+    const currentNow = new Date();
+    const currentMonthKey = `${currentNow.getFullYear()}-${String(currentNow.getMonth() + 1).padStart(2, "0")}`;
+    const currentMonthData = monthlySummary[currentMonthKey] || { classes: 0, hours: 0, revenue: 0 };
+    const currentMonthStats = {
+      totalClasses: currentMonthData.classes,
+      totalHours: currentMonthData.hours,
+      totalSalary: currentMonthData.revenue,
+    };
+
+    const studentProfiles = await StudentProfile.find({ "tutors.name": tutorName })
+      .populate("student", "name email")
+      .sort({ createdAt: -1 });
+
+    const assignedStudents = [];
+
+    for (const profile of studentProfiles) {
+      if (!profile.student) continue;
+
+      const matchingTutor = (profile.tutors || []).find(
+        (tutor) => tutor?.name?.toLowerCase() === tutorName.toLowerCase()
+      );
+
+      const studentClasses = await Class.find({
+        student: profile.student._id,
+        "tutor.name": tutorName,
+      }).sort({ date: 1 });
+
+      assignedStudents.push({
+        id: profile.student._id,
+        name: profile.student.name,
+        email: profile.student.email,
+        school: profile.school,
+        standard: profile.standard,
+        subjects: profile.subjects || [],
+        tutorSubject: matchingTutor?.subject || "",
+        assignedClasses: studentClasses,
+        upcomingClasses: studentClasses.filter(
+          (item) => new Date(item.date) >= now && ["scheduled", "postponed"].includes(item.status)
+        ),
+        packageHours: profile.packageHours || 0,
+        hoursPerDay: profile.hoursPerDay || 1,
+        totalHours: profile.totalHours || 0,
+        packageStartDate: profile.packageStartDate,
+        packageEndDate: profile.packageEndDate,
+        packagePattern: profile.packagePattern,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        upcomingClasses,
+        recentClasses,
+        assignedStudents,
+        stats: {
+          totalClasses: allClasses.length,
+          completedClasses: completedClasses.length,
+          totalHours,
+          totalRevenue,
+        },
+        monthlySummary: Object.values(monthlySummary).sort((a, b) => a.month.localeCompare(b.month)),
+        currentMonthStats,
+      },
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getTutorSalaryReport = async (req, res) => {
+  try {
+    const { tutorName } = req.params;
+    if (!tutorName) {
+      throw new Error("Tutor name is required");
+    }
+
+    const now = new Date();
+    // Parse year and month safely
+    const reqYear = req.query.year ? parseInt(req.query.year, 10) : now.getFullYear();
+    const reqMonth = req.query.month ? parseInt(req.query.month, 10) : now.getMonth() + 1; // 1-12
+
+    const monthStart = new Date(reqYear, reqMonth - 1, 1);
+    const monthEnd = new Date(reqYear, reqMonth, 1); // exclusive
+
+    // All-time completed classes for this tutor
+    const allDoneClasses = await Class.find({
+      "tutor.name": { $regex: new RegExp(`^${tutorName}$`, "i") },
+      status: "done",
+    });
+
+    // Completed classes for the selected month
+    const monthDoneClasses = allDoneClasses.filter((cls) => {
+      const d = new Date(cls.date);
+      return d.getFullYear() === reqYear && d.getMonth() === reqMonth - 1;
+    });
+
+    // Build daily breakdown
+    const daysInMonth = new Date(reqYear, reqMonth, 0).getDate();
+    const dailyBreakdown = [];
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayClasses = monthDoneClasses.filter((cls) => {
+        const d = new Date(cls.date);
+        return d.getDate() === day;
+      });
+      const hours = dayClasses.reduce((s, c) => s + Number(c.duration || 0), 0);
+      const amount = dayClasses.reduce(
+        (s, c) => s + Number(c.tutorRate || 0) * Number(c.duration || 0),
+        0
+      );
+      dailyBreakdown.push({
+        day,
+        classCount: dayClasses.length,
+        hours,
+        amount,
+      });
+    }
+
+    // Monthly totals
+    const monthlyTotals = {
+      totalClasses: monthDoneClasses.length,
+      totalHours: monthDoneClasses.reduce((s, c) => s + Number(c.duration || 0), 0),
+      totalAmount: monthDoneClasses.reduce(
+        (s, c) => s + Number(c.tutorRate || 0) * Number(c.duration || 0),
+        0
+      ),
+    };
+
+    // All-time totals
+    const allTimeTotals = {
+      totalClasses: allDoneClasses.length,
+      totalHours: allDoneClasses.reduce((s, c) => s + Number(c.duration || 0), 0),
+      totalAmount: allDoneClasses.reduce(
+        (s, c) => s + Number(c.tutorRate || 0) * Number(c.duration || 0),
+        0
+      ),
+    };
+
+    // Tutor user info
+    const tutorUser = await User.findOne({
+      name: { $regex: new RegExp(`^${tutorName}$`, "i") },
+      role: "tutor",
+    }).select("name email subjects");
+
+    res.status(200).json({
+      success: true,
+      data: {
+        tutorInfo: tutorUser || { name: tutorName },
+        month: reqMonth,
+        year: reqYear,
+        daysInMonth,
+        dailyBreakdown,
+        monthlyTotals,
+        allTimeTotals,
+      },
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
 
 exports.getSingleStudent = async (req, res) => {
   try {
@@ -692,6 +1229,11 @@ exports.updateStudent = async (req, res) => {
       mode,
       remarks,
       subjects,
+      packageHours,
+      hoursPerDay,
+      packageStartDate,
+      packageEndDate,
+      packagePattern,
     } = req.body;
 
     if (!studentId) {
@@ -734,6 +1276,11 @@ exports.updateStudent = async (req, res) => {
     if (mode) profile.mode = mode;
     if (remarks !== undefined) profile.remarks = remarks;
     if (subjects) profile.subjects = subjects;
+    if (packageHours !== undefined) profile.packageHours = Number(packageHours) || 0;
+    if (hoursPerDay !== undefined) profile.hoursPerDay = Number(hoursPerDay) || 1;
+    if (packageStartDate !== undefined) profile.packageStartDate = packageStartDate ? new Date(packageStartDate) : null;
+    if (packageEndDate !== undefined) profile.packageEndDate = packageEndDate ? new Date(packageEndDate) : null;
+    if (packagePattern !== undefined) profile.packagePattern = packagePattern || null;
 
     await profile.save();
 
@@ -749,6 +1296,7 @@ exports.updateStudent = async (req, res) => {
     });
   }
 };
+
 
 
 exports.deleteStudent = async (req, res) => {
@@ -959,6 +1507,70 @@ exports.getAllRequests = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
+exports.createTutorRequest = async (req, res) => {
+  try {
+    const tutorUser = req.user;
+
+    const { classId, type, reason, postponedDate } = req.body;
+
+    if (!classId || !type) {
+      throw new Error("classId and type are required");
+    }
+
+    if (!["postpone", "cancel"].includes(type)) {
+      throw new Error("type must be 'postpone' or 'cancel'");
+    }
+
+    if (type === "postpone" && !postponedDate) {
+      throw new Error("postponedDate is required for postpone requests");
+    }
+
+    const classData = await Class.findById(classId);
+
+    if (!classData) {
+      throw new Error("Class not found");
+    }
+
+    // Verify this class belongs to this tutor (by name match stored in class doc)
+    if (classData.tutor?.name !== tutorUser.name) {
+      throw new Error("Unauthorized: this class does not belong to you");
+    }
+
+    // Prevent duplicate pending requests
+    const existing = await Request.findOne({
+      classId,
+      tutor: tutorUser._id,
+      status: "pending",
+    });
+    if (existing) {
+      throw new Error("A pending request already exists for this class");
+    }
+
+    const request = await Request.create({
+      classId,
+      student: classData.student,
+      tutor: tutorUser._id,
+      requestedBy: "tutor",
+      type,
+      reason,
+      postponedDate: type === "postpone" ? new Date(postponedDate) : undefined,
+      status: "pending",
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Postpone request submitted successfully",
+      data: request,
+    });
+  } catch (error) {
+    res.status(400).json({
       success: false,
       message: error.message,
     });
