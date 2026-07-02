@@ -466,11 +466,22 @@ exports.scheduleClass = async (req, res) => {
       throw new Error("Student profile not found");
     }
 
-    const tutor = profile.tutors.find(
+    // Try exact match (name + subject, case-insensitive, trimmed)
+    const tutorNameNorm = tutorName.trim().toLowerCase();
+    const subjectNorm = subject.trim().toLowerCase();
+
+    let tutor = profile.tutors.find(
       (t) =>
-        t.name.toLowerCase() === tutorName.toLowerCase() &&
-        t.subject.toLowerCase() === subject.toLowerCase()
+        t.name.trim().toLowerCase() === tutorNameNorm &&
+        t.subject.trim().toLowerCase() === subjectNorm
     );
+
+    // Fallback: match by name only (handles manual subject input or slight case/subject differences)
+    if (!tutor) {
+      tutor = profile.tutors.find(
+        (t) => t.name.trim().toLowerCase() === tutorNameNorm
+      );
+    }
 
     if (!tutor) {
       throw new Error("Tutor not assigned to this student");
@@ -799,8 +810,41 @@ exports.deleteAllClasses = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: `${classesToDelete.length} class(es) deleted successfully`,
+      message: "All classes deleted successfully",
       deletedCount: classesToDelete.length,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { newPassword } = req.body;
+
+    if (!userId) {
+      throw new Error("User id is required");
+    }
+    
+    if (!newPassword) {
+      throw new Error("New password is required");
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    const user = await User.findByIdAndUpdate(userId, { password: hashedPassword });
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Password reset successfully",
     });
   } catch (error) {
     res.status(400).json({

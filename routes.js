@@ -25,6 +25,7 @@ const {
   createTest,
   updateTestMarks,
   createTutorRequest,
+  resetPassword,
 } = require("./controllers/admin.controller");
 const {
   getStudentDashboard,
@@ -74,6 +75,9 @@ router.post("/tutor-request", protect, isTutor, createTutorRequest);
 // -
 router.get("/requests", protect, isAdmin, getAllRequests);
 router.patch("/requests/:requestId", protect, isAdmin, handleRequest);
+
+// -
+router.put("/users/:userId/reset-password", protect, isAdmin, resetPassword);
 
 
 // -st
