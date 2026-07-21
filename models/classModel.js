@@ -35,8 +35,26 @@ const classSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["scheduled", "done", "postponed", "cancelled"],
+      enum: ["scheduled", "in_progress", "done", "postponed", "cancelled"],
       default: "scheduled",
+    },
+
+    // Time tracking fields
+    classStartTime: {
+      type: Date,
+      default: null,
+    },
+
+    classEndTime: {
+      type: Date,
+      default: null,
+    },
+
+    // Actual minutes taken (from login/logout or admin manual input)
+    // When set, salary and hours calculations use this instead of 'duration'
+    actualMinutes: {
+      type: Number,
+      default: null,
     },
   },
   { timestamps: true }

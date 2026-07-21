@@ -9,6 +9,7 @@ const {
   updateAssignedTutor,
   scheduleClass,
   updateClassStatus,
+  setClassActualTime,
   editClass,
   bulkEditClasses,
   deleteClass,
@@ -58,6 +59,7 @@ router.post(
 router.post("/students/:studentId/tests", protect, isAdmin, createTest);
 router.patch("/tests/:testId/marks", protect, isAdmin, updateTestMarks);
 router.patch("/classes/:classId/status", protect, updateClassStatus);
+router.patch("/classes/:classId/actual-time", protect, isAdmin, setClassActualTime);
 router.patch("/classes/bulk-edit", protect, isAdmin, bulkEditClasses);
 router.patch("/classes/:classId", protect, isAdmin, editClass);
 router.delete("/classes/:classId", protect, isAdmin, deleteClass);

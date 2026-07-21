@@ -24,13 +24,18 @@ const applyBillingToProfile = async (profile, classData, delta) => {
 
   if (!tutor) return;
 
-  const duration = Number(classData.duration) || 0;
+  // Use actualMinutes if available, otherwise fall back to duration (hours)
+  const hoursUsed =
+    classData.actualMinutes != null
+      ? Number(classData.actualMinutes) / 60
+      : Number(classData.duration) || 0;
+
   const tutorRate = Number(classData.tutorRate ?? (getTutorRate(tutor, "tutorHourlyRate") || getTutorRate(tutor, "hourlyRate")));
   const studentRate = Number(classData.studentRate ?? getTutorRate(tutor, "studentHourlyRate"));
 
-  profile.totalHours = Math.max(0, Number(profile.totalHours || 0) + delta * duration);
-  profile.totalTutorFees = Math.max(0, Number(profile.totalTutorFees || 0) + delta * duration * tutorRate);
-  profile.totalStudentFees = Math.max(0, Number(profile.totalStudentFees || 0) + delta * duration * studentRate);
+  profile.totalHours = Math.max(0, Number(profile.totalHours || 0) + delta * hoursUsed);
+  profile.totalTutorFees = Math.max(0, Number(profile.totalTutorFees || 0) + delta * hoursUsed * tutorRate);
+  profile.totalStudentFees = Math.max(0, Number(profile.totalStudentFees || 0) + delta * hoursUsed * studentRate);
   profile.totalFees = profile.totalStudentFees;
 
   await profile.save();
@@ -541,7 +546,7 @@ exports.updateClassStatus = async (req, res) => {
       throw new Error("Status is required");
     }
 
-    const allowedStatuses = ["done", "postponed", "cancelled"];
+    const allowedStatuses = ["in_progress", "done", "postponed", "cancelled"];
 
     if (!allowedStatuses.includes(status)) {
       throw new Error("Invalid status");
@@ -557,6 +562,10 @@ exports.updateClassStatus = async (req, res) => {
       throw new Error("Cannot update a cancelled class");
     }
 
+    if (classData.status === "done") {
+      throw new Error("Cannot update a completed class");
+    }
+
     const isTutorRequest = req.user?.role === "tutor";
     if (isTutorRequest) {
       const tutorName = classData.tutor?.name?.toLowerCase();
@@ -566,15 +575,57 @@ exports.updateClassStatus = async (req, res) => {
       }
     }
 
-    if (classData.status === "done" && status === "done") {
-      throw new Error("Class already marked as done");
+    // ── Tutor: Start Class ──
+    if (status === "in_progress") {
+      if (classData.status === "in_progress") {
+        throw new Error("Class is already in progress");
+      }
+      if (!isTutorRequest) {
+        throw new Error("Only the assigned tutor can start a class");
+      }
+      classData.status = "in_progress";
+      classData.classStartTime = new Date();
+      classData.classEndTime = null;
+      classData.actualMinutes = null;
+      await classData.save();
+      return res.status(200).json({
+        success: true,
+        message: "Class started successfully",
+        data: classData,
+      });
     }
 
+    // ── Tutor: End Class ──
+    if (status === "done" && isTutorRequest) {
+      if (classData.status !== "in_progress") {
+        throw new Error("Class must be in progress to mark as done via End Class");
+      }
+      const endTime = new Date();
+      const startTime = classData.classStartTime;
+      const minutes = startTime
+        ? Math.round((endTime - new Date(startTime)) / 60000)
+        : null;
+
+      classData.classEndTime = endTime;
+      classData.actualMinutes = minutes;
+      classData.status = "done";
+
+      const profile = await StudentProfile.findOne({ student: classData.student });
+      await applyBillingToProfile(profile, classData, 1);
+      await classData.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Class ended and marked as done",
+        data: classData,
+      });
+    }
+
+    // ── Admin: postpone ──
     if (status === "postponed") {
       if (!newDate) {
         throw new Error("New date is required for postponing");
       }
-
       classData.date = new Date(newDate);
     }
 
@@ -593,6 +644,65 @@ exports.updateClassStatus = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Class status updated successfully",
+      data: classData,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Admin manually sets actual minutes for a class and marks it done
+exports.setClassActualTime = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { actualMinutes } = req.body;
+
+    if (!classId) {
+      throw new Error("Class id is required");
+    }
+
+    if (actualMinutes === undefined || actualMinutes === null || isNaN(Number(actualMinutes))) {
+      throw new Error("actualMinutes is required and must be a number");
+    }
+
+    const minutes = Math.max(0, Math.round(Number(actualMinutes)));
+
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      throw new Error("Class not found");
+    }
+
+    if (classData.status === "cancelled") {
+      throw new Error("Cannot update a cancelled class");
+    }
+
+    const previousStatus = classData.status;
+    const profile = await StudentProfile.findOne({ student: classData.student });
+
+    // Reverse previous billing if class was already done
+    if (previousStatus === "done") {
+      await applyBillingToProfile(profile, classData, -1);
+    }
+
+    classData.actualMinutes = minutes;
+    classData.classEndTime = new Date();
+    if (!classData.classStartTime) {
+      // If no start time recorded, set it as (now - actualMinutes)
+      classData.classStartTime = new Date(Date.now() - minutes * 60000);
+    }
+    classData.status = "done";
+
+    await classData.save();
+
+    // Apply new billing with updated actualMinutes
+    await applyBillingToProfile(profile, classData, 1);
+
+    res.status(200).json({
+      success: true,
+      message: "Class actual time set and marked as done",
       data: classData,
     });
   } catch (error) {
@@ -958,16 +1068,23 @@ exports.getTutorDashboard = async (req, res) => {
 
     const allClasses = await Class.find({ "tutor.name": tutorName });
     const completedClasses = allClasses.filter((item) => item.status === "done");
-    const totalHours = completedClasses.reduce((sum, item) => sum + Number(item.duration || 0), 0);
-    const totalRevenue = completedClasses.reduce((sum, item) => sum + Number(item.tutorRate || 0) * Number(item.duration || 0), 0);
+    const totalHours = completedClasses.reduce((sum, item) => {
+      const hrs = item.actualMinutes != null ? Number(item.actualMinutes) / 60 : Number(item.duration || 0);
+      return sum + hrs;
+    }, 0);
+    const totalRevenue = completedClasses.reduce((sum, item) => {
+      const hrs = item.actualMinutes != null ? Number(item.actualMinutes) / 60 : Number(item.duration || 0);
+      return sum + Number(item.tutorRate || 0) * hrs;
+    }, 0);
 
     const monthlySummary = completedClasses.reduce((acc, item) => {
       const date = new Date(item.date);
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
       const existing = acc[monthKey] || { month: monthKey, classes: 0, hours: 0, revenue: 0 };
+      const hrs = item.actualMinutes != null ? Number(item.actualMinutes) / 60 : Number(item.duration || 0);
       existing.classes += 1;
-      existing.hours += Number(item.duration || 0);
-      existing.revenue += Number(item.tutorRate || 0) * Number(item.duration || 0);
+      existing.hours += hrs;
+      existing.revenue += Number(item.tutorRate || 0) * hrs;
       acc[monthKey] = existing;
       return acc;
     }, {});
@@ -1080,15 +1197,22 @@ exports.getTutorSalaryReport = async (req, res) => {
         const d = new Date(cls.date);
         return d.getDate() === day;
       });
-      const hours = dayClasses.reduce((s, c) => s + Number(c.duration || 0), 0);
-      const amount = dayClasses.reduce(
-        (s, c) => s + Number(c.tutorRate || 0) * Number(c.duration || 0),
-        0
-      );
+      const hours = dayClasses.reduce((s, c) => {
+        const hrs = c.actualMinutes != null ? Number(c.actualMinutes) / 60 : Number(c.duration || 0);
+        return s + hrs;
+      }, 0);
+      const totalMinutes = dayClasses.reduce((s, c) => {
+        return s + (c.actualMinutes != null ? Number(c.actualMinutes) : Number(c.duration || 0) * 60);
+      }, 0);
+      const amount = dayClasses.reduce((s, c) => {
+        const hrs = c.actualMinutes != null ? Number(c.actualMinutes) / 60 : Number(c.duration || 0);
+        return s + Number(c.tutorRate || 0) * hrs;
+      }, 0);
       dailyBreakdown.push({
         day,
         classCount: dayClasses.length,
         hours,
+        totalMinutes,
         amount,
       });
     }
@@ -1096,21 +1220,33 @@ exports.getTutorSalaryReport = async (req, res) => {
     // Monthly totals
     const monthlyTotals = {
       totalClasses: monthDoneClasses.length,
-      totalHours: monthDoneClasses.reduce((s, c) => s + Number(c.duration || 0), 0),
-      totalAmount: monthDoneClasses.reduce(
-        (s, c) => s + Number(c.tutorRate || 0) * Number(c.duration || 0),
-        0
-      ),
+      totalMinutes: monthDoneClasses.reduce((s, c) => {
+        return s + (c.actualMinutes != null ? Number(c.actualMinutes) : Number(c.duration || 0) * 60);
+      }, 0),
+      totalHours: monthDoneClasses.reduce((s, c) => {
+        const hrs = c.actualMinutes != null ? Number(c.actualMinutes) / 60 : Number(c.duration || 0);
+        return s + hrs;
+      }, 0),
+      totalAmount: monthDoneClasses.reduce((s, c) => {
+        const hrs = c.actualMinutes != null ? Number(c.actualMinutes) / 60 : Number(c.duration || 0);
+        return s + Number(c.tutorRate || 0) * hrs;
+      }, 0),
     };
 
     // All-time totals
     const allTimeTotals = {
       totalClasses: allDoneClasses.length,
-      totalHours: allDoneClasses.reduce((s, c) => s + Number(c.duration || 0), 0),
-      totalAmount: allDoneClasses.reduce(
-        (s, c) => s + Number(c.tutorRate || 0) * Number(c.duration || 0),
-        0
-      ),
+      totalMinutes: allDoneClasses.reduce((s, c) => {
+        return s + (c.actualMinutes != null ? Number(c.actualMinutes) : Number(c.duration || 0) * 60);
+      }, 0),
+      totalHours: allDoneClasses.reduce((s, c) => {
+        const hrs = c.actualMinutes != null ? Number(c.actualMinutes) / 60 : Number(c.duration || 0);
+        return s + hrs;
+      }, 0),
+      totalAmount: allDoneClasses.reduce((s, c) => {
+        const hrs = c.actualMinutes != null ? Number(c.actualMinutes) / 60 : Number(c.duration || 0);
+        return s + Number(c.tutorRate || 0) * hrs;
+      }, 0),
     };
 
     // Tutor user info
